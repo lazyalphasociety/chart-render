@@ -102,28 +102,102 @@ def binance_symbol(ticker):
     return s
 
 
+#  크립토 거래소 — **한 곳만 믿지 않는다.**
+#  바이낸스는 미국 IP 에 451(Unavailable For Legal Reasons) 을 돌려준다.
+#  Railway 가 미국이라 그대로 막혔다. 그래서 차례로 시도하고 먼저 되는 곳을 쓴다.
+#  마지막 두 곳(코인베이스·크라켄)은 미국에서 확실히 열리는 대신 상장이 적다.
+_LAST_SRC = {"name": None, "err": None}
+
+
+def _split_pair(sym):
+    """`CELOUSDT` → `("CELO", "USDT")`. 못 가르면 (sym, "")."""
+    for q in ("USDT", "USDC", "BUSD", "USD", "BTC", "ETH"):
+        if sym.endswith(q) and len(sym) > len(q):
+            return sym[:-len(q)], q
+    return sym, ""
+
+
+def _src_bybit(sym, bars):
+    r = requests.get("https://api.bybit.com/v5/market/kline", timeout=TIMEOUT,
+                     params={"category": "spot", "symbol": sym,
+                             "interval": "D", "limit": min(bars, 1000)})
+    if r.status_code != 200:
+        raise NoData("bybit %d" % r.status_code)
+    j = r.json() or {}
+    if j.get("retCode") not in (0, "0"):
+        raise NoData("bybit retCode=%s" % j.get("retCode"))
+    ks = ((j.get("result") or {}).get("list")) or []
+    return [{"ms": int(k[0]), "o": k[1], "h": k[2], "l": k[3], "c": k[4],
+             "v": k[5]} for k in ks]
+
+
+def _src_okx(sym, bars):
+    base, quote = _split_pair(sym)
+    inst = "%s-%s" % (base, quote or "USDT")
+    r = requests.get("https://www.okx.com/api/v5/market/history-candles",
+                     timeout=TIMEOUT,
+                     params={"instId": inst, "bar": "1D",
+                             "limit": min(bars, 300)})
+    if r.status_code != 200:
+        raise NoData("okx %d" % r.status_code)
+    j = r.json() or {}
+    if str(j.get("code")) != "0":
+        raise NoData("okx code=%s" % j.get("code"))
+    return [{"ms": int(k[0]), "o": k[1], "h": k[2], "l": k[3], "c": k[4],
+             "v": k[5]} for k in (j.get("data") or [])]
+
+
+def _src_binance(sym, bars):
+    r = requests.get("%s/api/v3/klines" % BINANCE_BASE, timeout=TIMEOUT,
+                     params={"symbol": sym, "interval": "1d",
+                             "limit": min(bars, 1000)})
+    if r.status_code != 200:
+        raise NoData("binance %d" % r.status_code)
+    return [{"ms": int(k[0]), "o": k[1], "h": k[2], "l": k[3], "c": k[4],
+             "v": k[5]} for k in (r.json() or [])]
+
+
+def _src_coinbase(sym, bars):
+    base, _q = _split_pair(sym)
+    r = requests.get(
+        "https://api.exchange.coinbase.com/products/%s-USD/candles" % base,
+        timeout=TIMEOUT, params={"granularity": 86400})
+    if r.status_code != 200:
+        raise NoData("coinbase %d" % r.status_code)
+    #  [time, low, high, open, close, volume] — 순서가 다르다
+    return [{"ms": int(k[0]) * 1000, "o": k[3], "h": k[2], "l": k[1],
+             "c": k[4], "v": k[5]} for k in (r.json() or [])]
+
+
+_CRYPTO_SRC = (("bybit", _src_bybit), ("okx", _src_okx),
+               ("binance", _src_binance), ("coinbase", _src_coinbase))
+
+
 def _rows_crypto(ticker, bars):
     sym = binance_symbol(ticker)
     if not sym:
         raise NoData("크립토 심볼 해석 실패 (%s)" % ticker)
-    r = requests.get("%s/api/v3/klines" % BINANCE_BASE, timeout=TIMEOUT,
-                     params={"symbol": sym, "interval": "1d",
-                             "limit": max(30, min(int(bars), 1000))})
-    if r.status_code != 200:
-        raise NoData("binance %d (%s←%s)" % (r.status_code, sym, ticker))
-    ks = r.json() or []
-    if not ks:
-        raise NoData("binance 응답에 캔들 없음 (%s)" % sym)
-    out = []
-    for k in ks:
+    errs = []
+    for name, fn in _CRYPTO_SRC:
         try:
-            d = datetime.datetime.utcfromtimestamp(int(k[0]) // 1000)
-        except (TypeError, ValueError, IndexError):
+            ks = fn(sym, bars)
+        except Exception as e:                       # noqa: BLE001
+            errs.append("%s:%s" % (name, e))
             continue
-        out.append({"date": d.strftime("%Y-%m-%d"), "open": k[1], "high": k[2],
-                    "low": k[3], "close": k[4], "volume": k[5]})
-    return out
-
+        if len(ks) < 30:
+            errs.append("%s:%d봉뿐" % (name, len(ks)))
+            continue
+        _LAST_SRC.update(name=name, err=None)
+        out = []
+        for k in ks:
+            d = datetime.datetime.utcfromtimestamp(k["ms"] // 1000)
+            out.append({"date": d.strftime("%Y-%m-%d"), "open": k["o"],
+                        "high": k["h"], "low": k["l"], "close": k["c"],
+                        "volume": k["v"]})
+        out.sort(key=lambda r: r["date"])           # 거래소마다 순서가 다르다
+        return out
+    _LAST_SRC.update(name=None, err=" | ".join(errs)[:200])
+    raise NoData("크립토 캔들 실패 %s — %s" % (sym, " | ".join(errs)[:160]))
 
 def _clean(rows):
     """None·0 이 섞인 봉을 걷어낸다. 하나라도 섞이면 선 계산이 통째로 망가진다."""
@@ -159,5 +233,5 @@ def fetch(ticker, market="KR", bars=NEED_BARS):
 
 def status():
     return {"supply_base": bool(SUPPLY_BASE), "supply_token": bool(SUPPLY_TOKEN),
-            "fmp_key": bool(FMP_KEY), "binance": bool(BINANCE_BASE),
-            "need_bars": NEED_BARS}
+            "fmp_key": bool(FMP_KEY), "need_bars": NEED_BARS,
+            "crypto_src": dict(_LAST_SRC)}
