@@ -132,7 +132,11 @@ def card():
             png = _render(q, candles)
         except Exception as e:                          # noqa: BLE001
             _STATS["error"] += 1
-            _STATS["last_error"] = _scrub("%s: %s" % (type(e).__name__, e))
+            #  **무엇을 요청받았는지**까지 남긴다. 티커만으로는 "왜 국장
+            #  종목이 FMP 로 갔나" 를 못 짚는다 — m 이 그 답이다.
+            _STATS["last_error"] = _scrub(
+                "%s: %s [t=%s m=%r]"
+                % (type(e).__name__, e, q.get("t"), q.get("m")))
             traceback.print_exc()
             #  **그림 하나 때문에 카드를 막지 않는다.** 404 면 디스코드가 이미지
             #  자리를 그냥 비운다 — 카드 본문은 그대로 나간다.
