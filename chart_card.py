@@ -223,13 +223,24 @@ def _ma_series(vals, n, kind):
 
 
 def _fmt_price(v, market="KR"):
+    """값의 크기에 자릿수를 맞춘다.
+
+    크립토는 한 화면에 `0.09939` 도 `104,300` 도 온다. 소수 두 자리로 고정하면
+    잔돈 코인의 진입·손절·목표가 전부 `$0.10` 이 돼 **다른 선이 같은 값을
+    가리킨다.** 값이 작을수록 자릿수를 늘린다.
+    """
     if v is None:
         return "-"
     if str(market).upper().startswith("K"):
         return format(int(round(v)), ",")
-    if abs(v) >= 500:
+    a = abs(v)
+    if a >= 500:
         return "$" + format(int(round(v)), ",")
-    return "$%.2f" % v
+    if a >= 1:
+        return "$%.2f" % v
+    if a >= 0.01:
+        return "$%.4f" % v
+    return "$%.6f" % v
 
 
 def render(sig, candles, emas=None, sample=False, catalog=None,
