@@ -21,6 +21,7 @@ watchlist-router 는 운영 중이다. 거기에 matplotlib 과 CJK 폰트를 �
 """
 import io
 import os
+import re
 import threading
 import time
 import traceback
@@ -35,6 +36,8 @@ from sign import SIG_KEY, verify
 app = Flask(__name__)
 
 ADMIN_TOKEN = (os.getenv("ADMIN_TOKEN") or "").strip()
+FMP_ENV = (os.getenv("FMP_API_KEY") or os.getenv("FMP_KEY") or "").strip()
+SUPPLY_TOK_ENV = (os.getenv("SUPPLY_TOKEN") or "").strip()
 TEST_WEBHOOK = (os.getenv("CHART_TEST_WEBHOOK") or "").strip()
 CACHE_SEC = int(os.getenv("CHART_CACHE_SEC", "900"))
 CACHE_MAX = 200
@@ -59,6 +62,23 @@ def _cache_put(key, png):
             for k in sorted(_CACHE, key=lambda k: _CACHE[k][0])[:CACHE_MAX // 4]:
                 _CACHE.pop(k, None)
         _CACHE[key] = (time.time(), png)
+
+
+def _scrub(msg):
+    """에러 문자열에서 비밀을 지운다.
+
+    /health 는 인증이 없다. 그런데 requests 의 예외 메시지에는 **요청 URL 이
+    통째로** 들어 있고 거기엔 apikey 가 붙어 있다. 실제로 FMP 키가 이 경로로
+    새어 나갔다(2026-09-29). 소스에서 안 싣는 게 1차 방어고, 이건 2차다.
+    """
+    s = str(msg)
+    for v in (FMP_ENV, SUPPLY_TOK_ENV, ADMIN_TOKEN,
+              os.getenv("CHART_SECRET") or ""):
+        if v and len(v) >= 8:
+            s = s.replace(v, "<가림>")
+    s = re.sub(r"(?i)(apikey|api_key|token|secret|key)=[^&\s\"\']+",
+               r"\1=<가림>", s)
+    return s[:400]
 
 
 def _f(v):
@@ -112,11 +132,11 @@ def card():
             png = _render(q, candles)
         except Exception as e:                          # noqa: BLE001
             _STATS["error"] += 1
-            _STATS["last_error"] = "%s: %s" % (type(e).__name__, e)
+            _STATS["last_error"] = _scrub("%s: %s" % (type(e).__name__, e))
             traceback.print_exc()
             #  **그림 하나 때문에 카드를 막지 않는다.** 404 면 디스코드가 이미지
             #  자리를 그냥 비운다 — 카드 본문은 그대로 나간다.
-            return jsonify({"error": str(e)}), 404
+            return jsonify({"error": _scrub(e)}), 404
         _cache_put(key, png)
     resp = send_file(io.BytesIO(png), mimetype="image/png",
                      download_name="%s.png" % (q.get("t") or "chart"))
