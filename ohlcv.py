@@ -13,6 +13,7 @@
 """
 import datetime
 import os
+import re
 
 import requests
 
@@ -38,6 +39,8 @@ SUPPLY_TOKEN = (os.getenv("SUPPLY_TOKEN") or "").strip()
 FMP_KEY = (os.getenv("FMP_API_KEY") or os.getenv("FMP_KEY") or "").strip()
 #  sepa-ai 와 **같은 곳**을 본다. 구 api/v3 는 요즘 요금제에서 403 이 난다.
 FMP_BASE = _base(os.getenv("FMP_BASE"), "https://financialmodelingprep.com/stable")
+#  크립토 — 바이낸스 공개 klines. **키가 필요 없다.** 그래서 안 붙일 이유가 없었다.
+BINANCE_BASE = _base(os.getenv("BINANCE_BASE"), "https://api.binance.com")
 
 
 class NoData(Exception):
@@ -82,6 +85,46 @@ def _rows_us(ticker, bars):
     return out
 
 
+def binance_symbol(ticker):
+    """TradingView 티커를 바이낸스 심볼로.
+
+    무기한 선물은 `ETHUSDT.P` 처럼 온다 — 접미사를 떼면 현물 심볼과 같다.
+    `BTCUSD`(코인베이스 등) 는 바이낸스에 없으므로 USDT 로 바꿔 본다.
+    일봉 모양만 쓰는 것이라 현물로 대신해도 그림은 사실상 같다.
+    """
+    s = re.sub(r"[^A-Z0-9]", "", str(ticker or "").upper())
+    for tail in ("PERP", "P"):
+        if s.endswith(tail) and len(s) > len(tail) + 3:
+            s = s[:-len(tail)]
+            break
+    if s.endswith("USD") and not s.endswith("BUSD"):
+        s = s[:-3] + "USDT"
+    return s
+
+
+def _rows_crypto(ticker, bars):
+    sym = binance_symbol(ticker)
+    if not sym:
+        raise NoData("크립토 심볼 해석 실패 (%s)" % ticker)
+    r = requests.get("%s/api/v3/klines" % BINANCE_BASE, timeout=TIMEOUT,
+                     params={"symbol": sym, "interval": "1d",
+                             "limit": max(30, min(int(bars), 1000))})
+    if r.status_code != 200:
+        raise NoData("binance %d (%s←%s)" % (r.status_code, sym, ticker))
+    ks = r.json() or []
+    if not ks:
+        raise NoData("binance 응답에 캔들 없음 (%s)" % sym)
+    out = []
+    for k in ks:
+        try:
+            d = datetime.datetime.utcfromtimestamp(int(k[0]) // 1000)
+        except (TypeError, ValueError, IndexError):
+            continue
+        out.append({"date": d.strftime("%Y-%m-%d"), "open": k[1], "high": k[2],
+                    "low": k[3], "close": k[4], "volume": k[5]})
+    return out
+
+
 def _clean(rows):
     """None·0 이 섞인 봉을 걷어낸다. 하나라도 섞이면 선 계산이 통째로 망가진다."""
     out = []
@@ -101,8 +144,13 @@ def _clean(rows):
 
 
 def fetch(ticker, market="KR", bars=NEED_BARS):
-    rows = (_rows_kr(ticker, bars) if str(market).upper().startswith("K")
-            else _rows_us(ticker, bars))
+    m = str(market or "").upper()
+    if m.startswith("K"):
+        rows = _rows_kr(ticker, bars)
+    elif m.startswith("C"):
+        rows = _rows_crypto(ticker, bars)
+    else:
+        rows = _rows_us(ticker, bars)
     rows = _clean(rows)
     if len(rows) < 30:
         raise NoData("쓸 만한 봉이 %d개뿐 (%s)" % (len(rows), ticker))
@@ -111,4 +159,5 @@ def fetch(ticker, market="KR", bars=NEED_BARS):
 
 def status():
     return {"supply_base": bool(SUPPLY_BASE), "supply_token": bool(SUPPLY_TOKEN),
-            "fmp_key": bool(FMP_KEY), "need_bars": NEED_BARS}
+            "fmp_key": bool(FMP_KEY), "binance": bool(BINANCE_BASE),
+            "need_bars": NEED_BARS}
