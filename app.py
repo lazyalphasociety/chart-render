@@ -34,8 +34,8 @@ from sign import SIG_KEY, verify
 
 app = Flask(__name__)
 
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
-TEST_WEBHOOK = os.getenv("CHART_TEST_WEBHOOK", "")
+ADMIN_TOKEN = (os.getenv("ADMIN_TOKEN") or "").strip()
+TEST_WEBHOOK = (os.getenv("CHART_TEST_WEBHOOK") or "").strip()
 CACHE_SEC = int(os.getenv("CHART_CACHE_SEC", "900"))
 CACHE_MAX = 200
 
@@ -133,6 +133,10 @@ def health():
         "cache": {"n": len(_CACHE), **_STATS},
         "secret": bool(os.getenv("CHART_SECRET")),
         "test_webhook": bool(TEST_WEBHOOK),
+        #  값을 절대 안 내보낸다. **있나 없나와 길이만** — 그것만으로
+        #  "안 넣었다" 와 "잘못 넣었다" 가 갈린다.
+        "admin_token": {"set": bool(ADMIN_TOKEN), "len": len(ADMIN_TOKEN)},
+        "chart_base": os.getenv("CHART_BASE", "") or None,
     })
 
 
@@ -143,7 +147,7 @@ def test_send():
     `?t=005930&m=KR` 로 실제 종목, 아무것도 안 주면 예시 데이터.
     웹훅 주소는 **환경변수에서만** 읽는다 — 주고받지 않는다.
     """
-    if not ADMIN_TOKEN or request.args.get("k") != ADMIN_TOKEN:
+    if not ADMIN_TOKEN or (request.args.get("k") or "").strip() != ADMIN_TOKEN:
         return jsonify({"error": "unauthorized"}), 401
     if not TEST_WEBHOOK:
         return jsonify({"error": "CHART_TEST_WEBHOOK 미설정"}), 400
