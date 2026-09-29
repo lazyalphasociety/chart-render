@@ -16,9 +16,23 @@ import requests
 NEED_BARS = 330                    # 320 + 여유
 TIMEOUT = 12
 
-SUPPLY_BASE = os.getenv("SUPPLY_BASE", "").rstrip("/")
-SUPPLY_TOKEN = os.getenv("SUPPLY_TOKEN", "")
-FMP_KEY = os.getenv("FMP_API_KEY") or os.getenv("FMP_KEY") or ""
+
+def _base(v):
+    """스킴 없이 넣어도 되게 한다.
+
+    Railway 대시보드에서 주소를 복사하면 `https://` 가 안 딸려온다. 그대로
+    환경변수에 넣으면 requests 가 MissingSchema 로 터지고, **카드에서는
+    그림만 조용히 빠져** 어디가 틀렸는지 알 길이 없다. 여기서 붙여 준다.
+    """
+    v = (v or "").strip().rstrip("/")
+    if v and not v.startswith(("http://", "https://")):
+        v = "https://" + v
+    return v
+
+
+SUPPLY_BASE = _base(os.getenv("SUPPLY_BASE"))
+SUPPLY_TOKEN = (os.getenv("SUPPLY_TOKEN") or "").strip()
+FMP_KEY = (os.getenv("FMP_API_KEY") or os.getenv("FMP_KEY") or "").strip()
 
 
 class NoData(Exception):
